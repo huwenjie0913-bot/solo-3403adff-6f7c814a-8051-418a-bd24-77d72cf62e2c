@@ -322,7 +322,13 @@ def analyze(scheme):
                         % (math.degrees(wrap), math.degrees(min_wrap))])
 
     # ---------- 障碍（护罩）干涉与安全间隙 ----------
-    belt_poly = belt_polyline(path) if path.get("ok", True) or edges else []
+    # 每条带段/每个轮上弧段分别求到矩形的间隙，便于告警时定位到具体带段
+    belt_features = []
+    for i, e in enumerate(edges):
+        if e["feasible"]:
+            belt_features.append(("edge", i, [e["p1"], e["p2"]]))
+    for wid in order:
+        belt_features.append(("arc", wid, arc_poly(arcs[wid])))
     safety = float(G.get("safetyGap", 10))
     obstacle_gaps = {}
     for o in obstacles:
@@ -336,22 +342,48 @@ def analyze(scheme):
                  "%s 与护罩/障碍 %s 重叠" % (",".join(pmap[w]["name"] for w in hit_wheels),
                                        o.get("name", o["id"])),
                  {"pulleys": hit_wheels, "obstacles": [o["id"]]})
-        # 整条带与矩形
-        gap = g.polyline_min_distance_to_obb(belt_poly, o) if belt_poly else None
+        # 逐条特征计算间隙并汇总
+        feat_gaps = []
+        for kind, fid, poly in belt_features:
+            dmin = g.polyline_min_distance_to_obb(poly, o)
+            feat_gaps.append((kind, fid, dmin))
+        gap = min((d for _, _, d in feat_gaps), default=None)
         obstacle_gaps[o["id"]] = gap
-        if gap is not None and gap < safety:
-            if gap <= 0.5:
-                warn("error", "BELT_COLLISION",
-                     "皮带与 %s 碰撞" % o.get("name", o["id"]),
-                     {"obstacles": [o["id"]]},
-                     basis=["带（含轮上弧段）与矩形边界最小距离 0 mm。"])
-            else:
-                warn("warning", "GUARD_GAP",
-                     "皮带与 %s 间隙 %.1f mm < 安全间隙 %.0f mm"
-                     % (o.get("name", o["id"]), gap, safety),
-                     {"obstacles": [o["id"]]},
-                     basis=["沿整条闭合带（直线段+弧段按 3° 离散）到旋转矩形边界求最小距离；",
-                            "实测 %.1f mm，要求 %.0f mm。" % (gap, safety)])
+        if gap is None or gap >= safety:
+            continue
+        hit_edges = [fid for kind, fid, d in feat_gaps
+                     if kind == "edge" and d <= max(gap + 0.5, safety - 1e-9)]
+        hit_arcs = [fid for kind, fid, d in feat_gaps
+                    if kind == "arc" and d <= max(gap + 0.5, safety - 1e-9)]
+        oname = o.get("name", o["id"])
+        refs = {"obstacles": [o["id"]], "edges": hit_edges, "pulleys": hit_arcs}
+
+        def feat_names(kinds, arcs_):
+            parts = []
+            if kinds:
+                parts.append("直线段 " + "、".join(
+                    "%s→%s" % (edges[k]["from"], edges[k]["to"]) for k in kinds))
+            if arcs_:
+                parts.append("轮弧 " + "、".join(pmap[w]["name"] for w in arcs_))
+            return "、".join(parts)
+
+        if gap <= 0.5:
+            near = [(k, f, d) for k, f, d in feat_gaps if d <= 0.5]
+            ne, na = [f for k, f, _ in near if k == "edge"], \
+                     [f for k, f, _ in near if k == "arc"]
+            warn("error", "BELT_COLLISION",
+                 "皮带与 %s 碰撞（%s）" % (oname, feat_names(ne, na)),
+                 {"obstacles": [o["id"]], "edges": ne, "pulleys": na},
+                 basis=["逐段计算带（直线段 + 轮上弧段按 3° 离散）到旋转矩形边界的最小距离；",
+                        "碰撞特征：%s，最小距离 0 mm。" % feat_names(ne, na)])
+        else:
+            basis = ["逐段计算带（直线段 + 轮上弧段按 3° 离散）到旋转矩形边界的最小距离；",
+                     "实测 %.1f mm，要求 %.0f mm；" % (gap, safety),
+                     "间隙不足特征：%s。" % feat_names(hit_edges, hit_arcs)]
+            warn("warning", "GUARD_GAP",
+                 "皮带与 %s 间隙 %.1f mm < 安全间隙 %.0f mm（%s）"
+                 % (oname, gap, safety, feat_names(hit_edges, hit_arcs)),
+                 refs, basis=basis)
 
     # ---------- 转速传播 ----------
     driver = next((p for p in pulleys if p.get("kind") == "driver"), pulleys[0])

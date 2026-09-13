@@ -169,6 +169,8 @@ const Render = (() => {
 
   function arcPath(wp) {
     const P = findPulley(wp.id);
+    // 结果可能比当前状态旧（轮刚删除）：跳过已不存在的轮弧
+    if (!P) return false;
     const c = w2s([P.x, P.y]);
     const r = wp.radius * State.view.scale;
     const a0 = wp.arcA0, sweep = wp.arcDir * wp.arcSweep;
@@ -179,6 +181,7 @@ const Render = (() => {
       const x = c[0] + r * Math.cos(a), y = c[1] + r * Math.sin(a);
       i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
     }
+    return true;
   }
 
   function drawBelt(res, color, dashed) {
@@ -213,9 +216,9 @@ const Render = (() => {
         ctx.beginPath(); ctx.arc(m[0], m[1], 6, 0, Math.PI * 2); ctx.stroke();
       }
     });
-    // 弧段
+    // 弧段（结果可能比状态旧，缺失轮返回 false 时跳过）
     (res.pulleys || []).forEach(wp => {
-      arcPath(wp);
+      if (!arcPath(wp)) return;
       const lit = (State.highlight.pulleys || []).includes(wp.id);
       ctx.save();
       ctx.strokeStyle = lit ? '#ff6b6b' : color;
@@ -351,9 +354,10 @@ const Render = (() => {
       ctx.fillStyle = lit ? '#ff9a9a' : 'rgba(150,180,210,.85)';
       ctx.fillText(e.length.toFixed(0), m[0] + 4, m[1] - 4);
     });
-    // 包角弧线
+    // 包角弧线（结果可能比状态旧，跳过缺失轮）
     res.pulleys.forEach(wp => {
       const P = findPulley(wp.id);
+      if (!P) return;
       const c = w2s([P.x, P.y]);
       const rr = wp.radius * State.view.scale + 14;
       if (rr < 18) return;

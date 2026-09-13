@@ -194,14 +194,20 @@ def segment_obb_gap(a, b, o):
 
 
 def circle_obb_overlap(c, r, o):
-    pts = obb_corners(o)
-    if point_in_obb(c, o, r):
-        return True
-    for i in range(4):
-        d, _ = point_segment_distance(c, pts[i], pts[(i + 1) % 4])
-        if d < r:
-            return True
-    return False
+    """圆与 OBB 是否重叠（相交或内切）。
+
+    把圆心变换到 OBB 局部坐标，求矩形（含边界）上离圆心最近的点，
+    比较其距离与半径。注意不能直接用 point_in_obb(margin=r)：
+    该判定沿局部轴各扩 r，相当于一个更大的矩形，会在角点附近误判。
+    """
+    a = math.radians(o.get("rot", 0.0))
+    cw, sw = math.cos(-a), math.sin(-a)
+    dx, dy = c[0] - o["x"], c[1] - o["y"]
+    lx, ly = dx * cw - dy * sw, dx * sw + dy * cw
+    hx, hy = o["w"] / 2.0, o["h"] / 2.0
+    qx = max(abs(lx) - hx, 0.0)
+    qy = max(abs(ly) - hy, 0.0)
+    return qx * qx + qy * qy < r * r - 1e-12
 
 
 def circle_overlap(c1, r1, c2, r2):

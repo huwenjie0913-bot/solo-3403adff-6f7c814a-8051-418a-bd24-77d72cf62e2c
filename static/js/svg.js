@@ -6,9 +6,9 @@ const SVG = (() => {
   }
 
   function arcPathD(wp) {
-    const { x: cx, y: cy } = (() => {
-      return State.pulleys.find(p => p.id === wp.id) || { x: 0, y: 0 };
-    })();
+    const P = State.pulleys.find(p => p.id === wp.id);
+    if (!P) return '';
+    const cx = P.x, cy = P.y;
     const r = wp.radius;
     const n = Math.max(12, Math.round(Math.abs(wp.arcSweep) * 180 / Math.PI / 3));
     let d = '';
@@ -65,8 +65,10 @@ const SVG = (() => {
         d += `M ${e.p1[0].toFixed(2)} ${e.p1[1].toFixed(2)} L ${e.p2[0].toFixed(2)} ${e.p2[1].toFixed(2)} `;
       });
       body.push(`<path d="${d}" fill="none" stroke="#c8983e" stroke-width="6" stroke-linecap="round"/>`);
-      res.pulleys.forEach(wp =>
-        body.push(`<path d="${arcPathD(wp)}" fill="none" stroke="#c8983e" stroke-width="6"/>`));
+      res.pulleys.forEach(wp => {
+        const d = arcPathD(wp);
+        if (d) body.push(`<path d="${d}" fill="none" stroke="#c8983e" stroke-width="6"/>`);
+      });
       // 段长标注
       res.edges.forEach(e => {
         if (!e.feasible) return;

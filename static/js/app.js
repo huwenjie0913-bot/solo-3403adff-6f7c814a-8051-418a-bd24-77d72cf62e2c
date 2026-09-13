@@ -6,7 +6,7 @@ const App = (() => {
   let analyzeToken = 0;
 
   async function invalidate(quickOnly) {
-    Render.render();
+    safeRender();
     if (quickOnly) {
       // 拖拽中只在本地画快速路径（正式数据仍由节流请求更新）
       const q = GEO.quickPath(State);
@@ -17,6 +17,12 @@ const App = (() => {
       if (my !== analyzeToken) return;
       afterAnalyze(res);
     });
+  }
+
+  // 任何渲染异常都不应阻断后续分析请求调度
+  function safeRender() {
+    try { Render.render(); }
+    catch (e) { console.error('render failed:', e); }
   }
 
   function afterAnalyze(res) {

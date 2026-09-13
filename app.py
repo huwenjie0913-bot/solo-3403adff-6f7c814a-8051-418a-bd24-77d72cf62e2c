@@ -1,10 +1,22 @@
 """Flask 入口：几何计算、方案存取、方案对比。"""
+import glob
 import os
 import sys
 
-from flask import Flask, jsonify, render_template, request
-
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+# 受限环境（系统 Python 无 pip / 无 Flask）下，自动加载仓库内 .pylibs 中的依赖。
+# 标准环境请优先：python3 -m pip install -r requirements.txt
+try:
+    import flask  # noqa: F401
+except ImportError:
+    _here = os.path.dirname(os.path.abspath(__file__))
+    _candidates = sorted(glob.glob(os.path.join(_here, ".pylibs", "lib", "python*",
+                                               "site-packages")))
+    if _candidates:
+        sys.path.insert(0, _candidates[-1])
+
+from flask import Flask, jsonify, render_template, request  # noqa: E402
 
 from belt import analyzer, store  # noqa: E402
 

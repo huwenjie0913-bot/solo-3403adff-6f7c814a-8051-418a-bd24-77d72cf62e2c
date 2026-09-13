@@ -167,13 +167,66 @@ def test_segment_cross_detection():
     assert not g.segments_intersect((0, 0), (10, 0), (0, 5), (10, 5))
 
 
+def test_circle_obb_corner_regression():
+    """角点附近相离（圆心距角点 7.071 mm，半径 6 mm）不得误判为碰撞。
+
+    10x10 矩形中心 (10,10)，最近角点 (5,5)；圆心 (0,0)。
+    """
+    o = {"x": 10, "y": 10, "w": 10, "h": 10, "rot": 0}
+    assert not g.circle_obb_overlap((0, 0), 6, o)
+    # 再接近一点（半径 7.08 > 7.071）应判重叠
+    assert g.circle_obb_overlap((0, 0), 7.08, o)
+    # 轮心在矩形内
+    assert g.circle_obb_overlap((10, 10), 1, o)
+    # 旋转 45° 后等价情形仍然成立
+    o2 = {"x": 0, "y": 14.1421356, "w": 10, "h": 10, "rot": 45}
+    assert not g.circle_obb_overlap((0, 0), 6, o2)
+    print("circle/OBB corner regression OK")
+
+
+def test_guard_refs_include_edges():
+    """护罩间隙告警的 refs 必须包含实际越限的带段索引。"""
+    s = open_scheme()
+    # 下直带段在 x=250 处 y≈74.6；矩形顶边 y≈82.1（60+4+18.1 半宽调整后），
+    # 取中心 y=85、h=4：顶边 83，与带间距约 8 mm < 15
+    s["obstacles"] = [{"id": "O1", "name": "护罩", "x": 150, "y": 85,
+                       "w": 200, "h": 4, "rot": 0}]
+    r = az.analyze(s)
+    w = next((x for x in r["warnings"] if x["code"] == "GUARD_GAP"), None)
+    assert w is not None, [(x["code"], x["message"]) for x in r["warnings"]]
+    assert w["refs"]["obstacles"] == ["O1"]
+    assert w["refs"]["edges"], "GUARD_GAP 必须在 refs.edges 中给出实际带段"
+    # 所报边到护罩的距离确实小于安全间隙
+    for ei in w["refs"]["edges"]:
+        e = r["edges"][ei]
+        d, _ = g.point_segment_distance((250, 83), e["p1"], e["p2"])
+        assert d < 15
+    assert r["obstacleGaps"]["O1"] > 0.5  # 只是间隙不足，并非碰撞
+    print("guard refs edges OK:", w["refs"])
+
+
+def test_belt_collision_refs():
+    """真正碰撞时 refs 同时给出碰撞带段和障碍。"""
+    s = open_scheme()
+    s["obstacles"] = [{"id": "O1", "name": "护罩", "x": 250, "y": 50,
+                       "w": 300, "h": 40, "rot": 0}]
+    r = az.analyze(s)
+    w = next((x for x in r["warnings"] if x["code"] == "BELT_COLLISION"), None)
+    assert w is not None, [(x["code"], x["message"]) for x in r["warnings"]]
+    assert w["refs"]["edges"]
+    print("collision refs OK:", w["message"], w["refs"])
+
+
 if __name__ == "__main__":
     test_tangent_direct()
     test_segment_cross_detection()
+    test_circle_obb_corner_regression()
     test_open_belt_analytic()
     test_crossed_belt_analytic()
     test_wrap_warning_and_tension()
     test_overlap_and_obstacle()
+    test_guard_refs_include_edges()
+    test_belt_collision_refs()
     test_three_wheel_serpentine()
     test_rpm_target_mismatch()
     print("\nALL TESTS PASSED")
