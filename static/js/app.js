@@ -8,9 +8,8 @@ const App = (() => {
   async function invalidate(quickOnly) {
     safeRender();
     if (quickOnly) {
-      // 拖拽中只在本地画快速路径（正式数据仍由节流请求更新）
-      const q = GEO.quickPath(State);
-      if (q && !State.result) State.quick = q;
+      // 拖拽中本地画快速路径（正式数据仍由节流请求更新）
+      State.quick = GEO.quickLoops(State);
     }
     const my = ++analyzeToken;
     await API.scheduleAnalyze(res => {
@@ -19,7 +18,6 @@ const App = (() => {
     });
   }
 
-  // 任何渲染异常都不应阻断后续分析请求调度
   function safeRender() {
     try { Render.render(); }
     catch (e) { console.error('render failed:', e); }
@@ -35,6 +33,7 @@ const App = (() => {
 
   function refreshAll() {
     Props.renderGlobal();
+    Props.renderLoops();
     Props.renderProps();
     Props.renderRoute();
     invalidate();
@@ -50,21 +49,27 @@ const App = (() => {
     badge.textContent = errs ? errs + ' 错' : warns ? warns + ' 警' : '✓ 通过';
     badge.className = 'badge ' + (errs ? 'err' : warns ? 'warn' : 'ok');
     if (!ws.length) {
-      box.innerHTML = '<p class="hint" style="color:var(--ok)">✓ 未发现几何、包角、张力或干涉问题。</p>';
+      box.innerHTML = '<p class="hint" style="color:var(--ok)">✓ 未发现几何、包角、张力、轴载或干涉问题。</p>';
       return;
     }
     ws.forEach((w, i) => {
       const div = document.createElement('div');
       div.className = 'warn-item ' + w.severity;
       if (State.highlight.activeWarn === i) div.classList.add('selected');
+      if (w.loop) div.style.borderLeftColor = loopColor(w.loop);
       const refNames = [];
       (w.refs.pulleys || []).forEach(id => {
         const p = findPulley(id); if (p) refNames.push(p.name);
       });
+      (w.refs.shafts || []).forEach(id => {
+        const s = findShaft(id); if (s) refNames.push('轴:' + s.name);
+      });
       (w.refs.obstacles || []).forEach(id => {
         const o = findObstacle(id); if (o) refNames.push(o.name);
       });
-      div.innerHTML = `<span class="code">${w.code}</span>
+      const lpName = w.loop
+        ? (State.loops.find(l => l.id === w.loop)?.name || w.loop) : null;
+      div.innerHTML = `<span class="code">${w.code}${lpName ? ' · ' + esc(lpName) : ''}</span>
         <div>${w.severity === 'error' ? '⛔' : '⚠'} ${esc(w.message)}</div>
         ${refNames.length ? `<div class="refs">关联：${refNames.map(esc).join('、')}</div>` : ''}`;
       div.addEventListener('click', () => activateWarn(w));
@@ -72,29 +77,35 @@ const App = (() => {
     });
   }
 
-  function warnsForEdge(i) {
-    return (State.result?.warnings || []).filter(w => (w.refs.edges || []).includes(i));
+  function warnsForEdge(lid, i) {
+    return (State.result?.warnings || []).filter(w =>
+      (w.refs.lrefs || []).some(p => p[0] === lid && p[1] === i));
   }
 
   function activateWarn(w, keepEdgeSel) {
     const refs = w.refs || {};
+    const lrefs = refs.lrefs || [];
     State.highlight = {
       pulleys: refs.pulleys || [],
-      edges: refs.edges || [],
+      edges: [],
+      lrefs,
       obstacles: refs.obstacles || [],
+      shafts: refs.shafts || [],
+      loops: refs.loops || (w.loop ? [w.loop] : []),
       activeWarn: (State.result?.warnings || []).indexOf(w)
     };
-    // 同步选中第一个关联轮，属性面板显示其参数
-    if ((refs.pulleys || []).length)
+    // 同步选中第一个关联对象
+    if ((refs.shafts || []).length)
+      selectObj('shaft', refs.shafts[0]);
+    else if ((refs.pulleys || []).length)
       selectObj('pulley', refs.pulleys[0]);
     else if ((refs.obstacles || []).length)
       selectObj('obstacle', refs.obstacles[0]);
     else if (!keepEdgeSel) selectObj(null, null);
     document.querySelector('.tab[data-tab=basis]').click();
-    Props.renderProps(); Props.renderRoute();
+    Props.renderProps(); Props.renderRoute(); Props.renderLoops();
     renderWarns(State.result);
     renderBasis(State.result);
-    // 居中到关联对象
     focusHighlight();
     Render.render();
   }
@@ -102,13 +113,19 @@ const App = (() => {
   function focusHighlight() {
     const pts = [];
     State.highlight.pulleys.forEach(id => {
-      const p = findPulley(id); if (p) pts.push([p.x, p.y]);
+      const p = findPulley(id);
+      const s = p && findShaft(p.shaftId);
+      if (p) pts.push(s ? [s.x, s.y] : [p.x, p.y]);
+    });
+    (State.highlight.shafts || []).forEach(id => {
+      const s = findShaft(id); if (s) pts.push([s.x, s.y]);
     });
     State.highlight.obstacles.forEach(id => {
       const o = findObstacle(id); if (o) GEO.obbCorners(o).forEach(c => pts.push(c));
     });
-    (State.highlight.edges || []).forEach(i => {
-      const e = State.result.edges[i]; if (e) pts.push(e.p1, e.p2);
+    (State.highlight.lrefs || []).forEach(([lid, i]) => {
+      const e = State.result?.loops?.find(l => l.id === lid)?.edges?.[i];
+      if (e) pts.push(e.p1, e.p2);
     });
     if (!pts.length) return;
     const cx = pts.reduce((s, p) => s + p[0], 0) / pts.length;
@@ -137,6 +154,91 @@ const App = (() => {
 
   function renderSummary(res) {
     if (!res) return;
+    if (res.mode !== 'multi') { renderSummaryLegacy(res); return; }
+    let html = '<h4>共享轴（各级输入/输出转速、扭矩、径向合力）</h4>';
+    html += '<table class="cmp"><tr><th>轴</th><th>带轮</th><th>转速</th><th>转向</th>'
+      + '<th>扭矩 N·m</th><th>径向合力 N</th><th>回路</th></tr>';
+    for (const s of res.shafts) {
+      const tBad = s.allowTorque > 0 && s.torque > s.allowTorque;
+      const fBad = s.allowRadial > 0 && s.radial > s.allowRadial;
+      const wheels = s.pulleys.map(pid => {
+        const p = findPulley(pid);
+        const rp = resultPulley(pid);
+        return p ? `${esc(p.name)} ⌀${p.diameter}` +
+          (rp ? `（${Math.round(rp.rpm)} rpm）` : '') : pid;
+      }).join('<br>');
+      html += `<tr class="shaft-row" data-sid="${s.id}" style="cursor:pointer${
+        (State.selection.type === 'shaft' && State.selection.id === s.id)
+          ? ';background:#2c4d74' : ''}">
+        <td>${esc(s.name)}${s.locked ? ' 🔒' : ''}</td>
+        <td style="text-align:left">${wheels}</td>
+        <td>${s.rpm == null ? '—' : Math.round(s.rpm)}</td>
+        <td>${s.rpm == null ? '—' : (s.dir > 0 ? 'CW' : 'CCW')}</td>
+        <td class="${tBad ? 'bad' : ''}">${s.torque.toFixed(1)}${s.allowTorque
+          ? `<div class="sub">/ ${s.allowTorque}</div>` : ''}</td>
+        <td class="${fBad ? 'bad' : ''}">${s.radial.toFixed(0)}${s.allowRadial
+          ? `<div class="sub">/ ${s.allowRadial}</div>` : ''}</td>
+        <td>${s.loops.map(lid =>
+          `<span style="color:${loopColor(lid)}">${esc((State.loops.find(l => l.id === lid) || {}).name || lid)}</span>`)
+          .join('<br>')}</td></tr>`;
+    }
+    html += '</table>';
+
+    html += '<h4>各级皮带回路</h4><table class="cmp"><tr><th>回路</th><th>功率 kW</th>'
+      + '<th>η</th> <th>输入 rpm</th><th>输出 rpm</th><th>带速 m/s</th><th>带长 mm</th>'
+      + '<th>F1 N</th><th>F2 N</th><th>Pmax kW</th></tr>';
+    for (const lr of res.loops) {
+      const t = lr.tension;
+      const outRpm = lr.order.map(id => resultPulley(id)).filter(p => p && p.kind === 'driven')
+        .map(p => Math.round(p.rpm)).join(', ');
+      html += `<tr style="cursor:pointer" class="loop-row" data-lid="${lr.id}">
+        <td><span style="color:${loopColor(lr.id)}">${esc(lr.name)}</span>${!lr.ok ? ' ⛔' : ''}</td>
+        <td>${lr.powerKw.toFixed(2)}<div class="sub">出 ${lr.outPower.toFixed(2)}</div></td>
+        <td>${lr.efficiency.toFixed(2)}</td>
+        <td>${Math.round(lr.inputRpm)}</td>
+        <td>${outRpm || '—'}</td>
+        <td>${lr.beltSpeed.toFixed(2)}</td>
+        <td>${lr.length.toFixed(0)}</td>
+        <td>${t ? t.f1.toFixed(0) : '—'}</td>
+        <td>${t ? t.f2.toFixed(0) : '—'}</td>
+        <td>${t ? t.pmax.toFixed(2) : '—'}</td></tr>`;
+    }
+    html += '</table>';
+
+    const travelers = res.loops.flatMap(lr => lr.traveler.map(tr => ({ ...tr, loop: lr })));
+    if (travelers.length) {
+      html += '<h4>张紧轮行程</h4><div class="kvgrid">';
+      for (const tr of travelers) {
+        const p = findPulley(tr.id);
+        html += `<div style="border-left:3px solid ${loopColor(tr.loop.id)};padding-left:6px">
+          ${esc(p?.name || tr.id)} 缩短效率 <b>${tr.rate.toFixed(2)}</b></div>
+          <div>需补偿带长 <b>${tr.need.toFixed(1)} mm</b></div>
+          <div>需要行程 / 可用 <b class="${tr.neededTravel > tr.available ? 'bad' : 'good'}">
+          ${tr.neededTravel ? tr.neededTravel.toFixed(1) : '—'} / ${tr.available} mm</b></div>`;
+      }
+      html += '</div>';
+    }
+    $('summary-content').innerHTML = html;
+    $('summary-content').querySelectorAll('.shaft-row').forEach(tr =>
+      tr.addEventListener('click', () => {
+        selectObj('shaft', tr.dataset.sid);
+        const rs = resultShaft(tr.dataset.sid);
+        State.highlight = { pulleys: rs?.pulleys || [], edges: [], lrefs: [],
+          obstacles: [], shafts: [tr.dataset.sid], loops: rs?.loops || [], activeWarn: null };
+        Props.renderProps(); Props.renderRoute(); renderSummary(State.result); Render.render();
+      }));
+    $('summary-content').querySelectorAll('.loop-row').forEach(tr =>
+      tr.addEventListener('click', () => {
+        State.activeLoopId = tr.dataset.lid;
+        const lr = resultLoop(tr.dataset.lid);
+        State.highlight = { pulleys: lr?.order || [], edges: [], lrefs: [],
+          obstacles: [], shafts: [], loops: [tr.dataset.lid], activeWarn: null };
+        Props.renderLoops(); Props.renderRoute(); Props.renderProps();
+        Render.render();
+      }));
+  }
+
+  function renderSummaryLegacy(res) {
     const t = res.tension;
     const rows = [];
     rows.push(['皮带总长度', res.beltLength?.toFixed(1), 'mm']);
@@ -160,44 +262,46 @@ const App = (() => {
         <td class="${bad ? 'bad' : 'good'}">${p.wrapDeg.toFixed(1)}°</td></tr>`;
     }
     html += '</table>';
-    if (res.traveler?.length) {
-      html += '<h4>张紧轮行程</h4><div class="kvgrid">';
-      for (const tr of res.traveler) {
-        const p = findPulley(tr.id);
-        html += `<div>${esc(p?.name || tr.id)} 缩短效率 <b>${tr.rate.toFixed(2)}</b></div>
-          <div>需补偿带长 <b>${tr.need.toFixed(1)} mm</b></div>
-          <div>需要行程 / 可用 <b class="${tr.neededTravel > tr.available ? 'bad' : 'good'}">
-            ${tr.neededTravel ? tr.neededTravel.toFixed(1) : '—'} / ${tr.available} mm</b></div>`;
-      }
-      html += '</div>';
-    }
     $('summary-content').innerHTML = html;
   }
 
-  // ---------- 删除 / 工具 ----------
+  // ---------- 删除 ----------
   function deleteSelection() {
     const { type, id } = State.selection;
     if (type === 'pulley') {
-      State.pulleys = State.pulleys.filter(p => p.id !== id);
-      State.route.order = State.route.order.filter(x => x !== id);
-      Object.keys(State.route.crossedEdges).forEach(k => {
-        if (k.startsWith(id + '->') || k.endsWith('->' + id))
-          delete State.route.crossedEdges[k];
+      const p = findPulley(id);
+      const sid = p?.shaftId;
+      State.pulleys = State.pulleys.filter(x => x.id !== id);
+      State.loops.forEach(lp => {
+        lp.order = lp.order.filter(x => x !== id);
+        Object.keys(lp.crossedEdges).forEach(k => {
+          if (k.startsWith(id + '->') || k.endsWith('->' + id)) delete lp.crossedEdges[k];
+        });
       });
+      // 轴上再无带轮则删除空轴
+      if (sid && !State.pulleys.some(x => x.shaftId === sid))
+        State.shafts = State.shafts.filter(s => s.id !== sid);
     } else if (type === 'obstacle') {
       State.obstacles = State.obstacles.filter(o => o.id !== id);
+    } else if (type === 'shaft') {
+      if (shaftPulleys(id).length) { alert('请先把轴上的带轮归到其他轴或删除，再删除空轴。'); return; }
+      State.shafts = State.shafts.filter(s => s.id !== id);
     }
     selectObj(null, null);
     persist(); refreshAll();
   }
 
-  function lockAllButTensioner() {
-    const anyUnlocked = State.pulleys.some(p => p.kind !== 'tensioner' && !p.locked);
-    State.pulleys.forEach(p => {
-      if (p.kind !== 'tensioner') p.locked = anyUnlocked;
+  function lockAll() {
+    // 锁定已确定的轴位（张紧轮所在轴仍可动，便于只调整其余轴和轮径试排）
+    const movable = State.shafts.filter(s =>
+      !s.locked && shaftPulleys(s.id).some(p => p.kind !== 'tensioner'));
+    const anyUnlocked = movable.length > 0;
+    State.shafts.forEach(s => {
+      if (shaftPulleys(s.id).some(p => p.kind !== 'tensioner')) s.locked = anyUnlocked;
+      shaftPulleys(s.id).forEach(p => { p.locked = s.locked; });
     });
     persist();
-    Props.renderProps(); Render.render();
+    Props.renderProps(); Props.renderLoops(); Render.render();
     $('btn-lock-all').classList.toggle('active', anyUnlocked);
   }
 
@@ -209,8 +313,9 @@ const App = (() => {
     items.forEach(s => {
       const li = document.createElement('li');
       const d = new Date(s.updated_at * 1000);
+      const ver = s.version ? `<span class="ver-tag" title="方案版本">v${s.version}</span>` : '';
       li.innerHTML = `<input type="checkbox" class="cmp" title="勾选加入比较">
-        <span class="nm" title="${esc(s.name)} · ${d.toLocaleString()}">${esc(s.name)}</span>
+        <span class="nm" title="${esc(s.name)} · ${d.toLocaleString()}">${ver}${esc(s.name)}</span>
         <button class="mini act-load">载入</button>
         <button class="mini act-save">存</button>
         <button class="mini act-del" style="color:var(--err)">删</button>`;
@@ -221,7 +326,8 @@ const App = (() => {
       });
       li.querySelector('.act-save').addEventListener('click', async () => {
         await API.updateScheme(s.id, s.name);
-        flash('已覆盖保存到「' + s.name + '」');
+        flash('已覆盖保存到「' + s.name + '」（版本 +1）');
+        refreshSchemeList();
       });
       li.querySelector('.act-del').addEventListener('click', async () => {
         if (!confirm('删除方案「' + s.name + '」？')) return;
@@ -233,15 +339,7 @@ const App = (() => {
   }
 
   function applyScheme(data) {
-    State.globals = { ...DEFAULT_GLOBALS, ...(data.globals || {}) };
-    State.pulleys = data.pulleys;
-    State.obstacles = data.obstacles || [];
-    State.route = data.route || { order: data.pulleys.map(p => p.id), crossedEdges: {} };
-    State.selection = { type: null, id: null };
-    State.overlayScheme = null;
-    clearHighlight();
-    syncUidSeq();
-    persist();
+    applyData(data, true);
     Render.fit();
     refreshAll();
   }
@@ -274,7 +372,6 @@ const App = (() => {
     if (picked.some(s => !s)) { await refreshSchemeList(); alert('方案列表已更新，请重新勾选。'); return; }
     const full = await Promise.all(picked.map(s => API.loadScheme(s.id)));
     const cmp = await API.compare(full[0].data, full[1].data);
-    // 叠加：B 方案按对比样式画在当前画布上
     State.overlayScheme = { scheme: full[1].data, result: cmp.b };
     let html = `<p>比较 <b>${esc(full[0].name)}</b>（当前实线） 与
       <b>${esc(full[1].name)}</b>（画布虚线叠加）</p>
@@ -291,12 +388,10 @@ const App = (() => {
       html += `<tr><td>${d.label}</td><td>${fmt(d.a)}</td><td>${fmt(d.b)}</td>
         <td class="${cls}">${d.delta == null ? '—' : (d.delta > 0 ? '+' : '') + fmt(d.delta)}</td></tr>`;
     }
-    html += '</table>';
-    // 告警对比
-    html += '<h4>告警数</h4><div class="kvgrid">';
-    for (const [tag, r] of [['A', cmp.a], ['B', cmp.b]]) {
-      const e = r.warnings.filter(w => w.severity === 'error').length;
-      const wn = r.warnings.filter(w => w.severity === 'warning').length;
+    html += '</table><h4>告警数</h4><div class="kvgrid">';
+    for (const [tag, rr] of [['A', cmp.a], ['B', cmp.b]]) {
+      const e = rr.warnings.filter(w => w.severity === 'error').length;
+      const wn = rr.warnings.filter(w => w.severity === 'warning').length;
       html += `<div>${tag} 错误 <b class="${e ? 'bad' : 'good'}">${e}</b></div>
         <div>${tag} 警告 <b class="${wn ? 'bad' : 'good'}">${wn}</b></div>`;
     }
@@ -316,11 +411,23 @@ const App = (() => {
       $('tab-basis').classList.toggle('hidden', t.dataset.tab !== 'basis');
       $('tab-summary').classList.toggle('hidden', t.dataset.tab !== 'summary');
     }));
-    $('btn-open-cross').addEventListener('click', Props.toggleTwoWheelMode);
-    $('btn-lock-all').addEventListener('click', lockAllButTensioner);
+    $('btn-lock-all').addEventListener('click', lockAll);
+    $('btn-add-loop').addEventListener('click', () => Loops.addLoop());
+    $('btn-open-cross').addEventListener('click', () => {
+      const lp = activeLoop();
+      if (!lp || lp.order.length !== 2) {
+        alert('开口/交叉一键切换仅适用于当前回路的两轮布置；多轮请在“带段交叉标记”中逐段设置。');
+        return;
+      }
+      const [a, b] = lp.order, k1 = a + '->' + b, k2 = b + '->' + a;
+      const crossed = lp.crossedEdges[k1] || lp.crossedEdges[k2];
+      if (crossed) { delete lp.crossedEdges[k1]; delete lp.crossedEdges[k2]; }
+      else { lp.crossedEdges[k1] = true; lp.crossedEdges[k2] = true; }
+      persist(); refreshAll();
+    });
     $('btn-fit').addEventListener('click', () => { Render.fit(); Render.render(); });
     $('btn-save').addEventListener('click', async () => {
-      const name = ($('scheme-name').value || '方案 ' + new Date().toLocaleString()).trim();
+      const name = ($('scheme-name').value || '多级方案 ' + new Date().toLocaleString()).trim();
       await API.saveScheme(name);
       $('scheme-name').value = '';
       refreshSchemeList();
@@ -330,7 +437,7 @@ const App = (() => {
       if (!confirm('新建空白方案？未保存内容将丢失。')) return;
       uidSeq = 1;
       const empty = { globals: { ...DEFAULT_GLOBALS }, pulleys: [], obstacles: [],
-        route: { order: [], crossedEdges: {} } };
+        shafts: [], loops: [] };
       applyScheme(empty);
     });
     $('btn-reset-demo').addEventListener('click', () => applyScheme(demoScheme()));
@@ -349,8 +456,10 @@ const App = (() => {
     $('file-import').addEventListener('change', async e => {
       const f = e.target.files[0];
       if (!f) return;
-      try { await SVG.importJSON(f); Render.fit(); refreshAll(); flash('已导入 JSON'); }
-      catch (err) { alert('导入失败：' + err.message); }
+      try {
+        await SVG.importJSON(f);
+        Render.fit(); refreshAll(); flash('已导入 JSON（共享轴与回路保留）');
+      } catch (err) { alert('导入失败：' + err.message); }
       e.target.value = '';
     });
     window.addEventListener('resize', () => { Render.resize(); Render.render(); });
@@ -362,12 +471,8 @@ const App = (() => {
     Interact.init();
     if (!restoreAutosave()) {
       const s = demoScheme();
-      State.globals = s.globals;
-      State.pulleys = s.pulleys;
-      State.obstacles = s.obstacles;
-      State.route = s.route;
+      applyData(s, true);
     }
-    syncUidSeq();
     Render.fit();
     refreshAll();
     refreshSchemeList();

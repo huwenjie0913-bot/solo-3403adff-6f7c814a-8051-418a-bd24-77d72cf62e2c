@@ -20,7 +20,8 @@ const API = (() => {
 
   function payload() {
     return { globals: State.globals, pulleys: State.pulleys,
-      obstacles: State.obstacles, route: State.route };
+      obstacles: State.obstacles, shafts: State.shafts, loops: State.loops,
+      route: State.route };
   }
 
   let seq = 0, timer = null, inflight = null;

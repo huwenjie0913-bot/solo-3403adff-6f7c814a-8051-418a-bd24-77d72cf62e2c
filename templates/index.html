@@ -18,9 +18,10 @@
       <button data-tool="tensioner" class="tool-btn" title="放置张紧轮（可动、参与张紧行程校核）">◍ 张紧轮</button>
       <button data-tool="obstacle" class="tool-btn" title="放置矩形护罩/障碍">▭ 护罩</button>
       <span class="sep"></span>
-      <button id="btn-open-cross" class="tool-btn" title="两轮时切换开口/交叉带">⊕ 模式：<b id="mode-label">开口带</b></button>
+      <button id="btn-open-cross" class="tool-btn" title="当前回路两轮时切换开口/交叉带">⊕ 当前回路：<b id="mode-label">开口带</b></button>
       <span class="sep"></span>
-      <button id="btn-lock-all" title="锁定全部轮位（只留张紧轮可动）">🔒 锁定轮位</button>
+      <button id="btn-add-loop" class="tool-btn" title="新建一条独立皮带回路">⇄ 新回路</button>
+      <button id="btn-lock-all" title="锁定全部已确定轴位（只留张紧轮可动）">🔒 锁定轴位</button>
       <button id="btn-fit" title="缩放适配全部图元">⛶ 适配</button>
     </div>
     <div class="tools">
@@ -38,17 +39,21 @@
       <summary>全局参数</summary>
       <div class="panel-body" id="global-form"></div>
     </details>
+    <details open id="panel-loops">
+      <summary>多级回路 <span id="loop-count" class="badge"></span></summary>
+      <div class="panel-body" id="loops-form"></div>
+    </details>
     <details open id="panel-props">
       <summary>属性</summary>
       <div class="panel-body" id="props-form"><p class="hint">选中画布上的轮或护罩后在此编辑。</p></div>
     </details>
     <details open id="panel-route">
-      <summary>绕行顺序</summary>
+      <summary>绕行顺序（当前回路 <b id="route-loop-name" style="color:var(--accent)"></b>）</summary>
       <div class="panel-body">
         <ol id="route-list" class="route-list"></ol>
         <label class="row-line" title="标记某段为交叉（内公切线）">带段交叉标记：</label>
         <div id="edge-cross-list" class="edge-cross-list"></div>
-        <p class="hint">按皮带绕入顺序列出全部轮；两轮时也可用顶部“开口/交叉”模式按钮一键切换。</p>
+        <p class="hint">顶部“新回路”可再建独立皮带回路；在属性面板把带轮“归到共享轴”即可形成多级传动。</p>
       </div>
     </details>
   </aside>
@@ -100,6 +105,7 @@
 <script src="/static/js/geometry.js"></script>
 <script src="/static/js/state.js"></script>
 <script src="/static/js/api.js"></script>
+<script src="/static/js/loops.js"></script>
 <script src="/static/js/props.js"></script>
 <script src="/static/js/render.js"></script>
 <script src="/static/js/interact.js"></script>

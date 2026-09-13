@@ -57,25 +57,22 @@ const GEO = (() => {
     return [-dir * ry, dir * rx];
   }
 
-  // 离线快速构建（与 build_paths 同思路），供拖拽过程中即时预览
-  function quickPath(state) {
-    const ps = state.pulleys;
-    const map = Object.fromEntries(ps.map(p => [p.id, p]));
-    const order = state.route.order.filter(id => map[id]);
-    if (order.length < 2) return null;
-    const driver = ps.find(p => p.kind === 'driver') || ps[0];
+  // 离线快速构建（与 build_paths 同思路），供拖拽过程中即时预览。
+  // 多级模式：遍历全部回路，返回 {loops: [{id,order,edges,arcs,dirs}]}；
+  // 单回路参数兼容旧调用 quickPath(state, loop)。
+  function buildLoop(ps, map, order, crossed, driver) {
     const dirs = { [driver.id]: driver.dir >= 0 ? 1 : -1 };
     for (let k = 1; k < order.length; k++) {
       const a = order[k - 1], b = order[k];
-      const flip = state.route.crossedEdges[a + '->' + b] ? -1 : 1;
+      const flip = crossed[a + '->' + b] ? -1 : 1;
       dirs[b] = dirs[a] * flip;
     }
     const edges = [];
     for (let i = 0; i < order.length; i++) {
       const a = order[i], b = order[(i + 1) % order.length];
       const A = map[a], B = map[b];
-      const crossed = !!state.route.crossedEdges[a + '->' + b];
-      const cands = tangents([A.x, A.y], A.diameter / 2, [B.x, B.y], B.diameter / 2, crossed);
+      const isX = !!crossed[a + '->' + b];
+      const cands = tangents([A.x, A.y], A.diameter / 2, [B.x, B.y], B.diameter / 2, isX);
       let best = null;
       for (const t of cands) {
         const va = norm(velAt([A.x, A.y], t.p1, dirs[a]));
@@ -85,7 +82,7 @@ const GEO = (() => {
         if (!best || score > best.score) best = { ...t, score };
       }
       if (!best) best = { p1: [A.x, A.y], p2: [B.x, B.y], score: -2 };
-      edges.push({ from: a, to: b, crossed, p1: best.p1, p2: best.p2,
+      edges.push({ from: a, to: b, crossed: isX, p1: best.p1, p2: best.p2,
         feasible: best.score >= 0.99 });
     }
     const arcs = {};
@@ -99,6 +96,34 @@ const GEO = (() => {
       arcs[id] = { a0, sweep, dir: dirs[id], r };
     });
     return { order, edges, arcs, dirs };
+  }
+
+  function quickLoops(state) {
+    const ps = state.pulleys;
+    const map = Object.fromEntries(ps.map(p => [p.id, p]));
+    const loops = [];
+    (state.loops || []).forEach(lp => {
+      const order = lp.order.filter(id => map[id]);
+      if (order.length < 2) { loops.push({ id: lp.id, order, edges: [], arcs: {} }); return; }
+      const driver = ps.find(p => p.id === lp.driver) ||
+        order.map(id => map[id]).find(p => p.kind === 'driver') || map[order[0]];
+      loops.push({ id: lp.id, ...buildLoop(ps, map, order, lp.crossedEdges || {}, driver) });
+    });
+    return { loops };
+  }
+
+  function quickPath(state, loop) {
+    if (state.loops && state.loops.length) {
+      const lp = loop || state.loops.find(l => l.id === state.activeLoopId) || state.loops[0];
+      const q = quickLoops(state).loops.find(q => q.id === lp.id);
+      return q && q.edges.length ? q : null;
+    }
+    const ps = state.pulleys;
+    const map = Object.fromEntries(ps.map(p => [p.id, p]));
+    const order = state.route.order.filter(id => map[id]);
+    if (order.length < 2) return null;
+    const driver = ps.find(p => p.kind === 'driver') || ps[0];
+    return buildLoop(ps, map, order, state.route.crossedEdges, driver);
   }
 
   function pointSegDist(p, a, b) {
@@ -123,5 +148,6 @@ const GEO = (() => {
   }
 
   return { TAU, add, sub, mul, dot, cross, len, dist, norm, ang, polar, cwSweep,
-    arcPoints, tangents, velAt, quickPath, pointSegDist, obbCorners, pointInObb };
+    arcPoints, tangents, velAt, quickPath, quickLoops, pointSegDist, obbCorners,
+    pointInObb };
 })();

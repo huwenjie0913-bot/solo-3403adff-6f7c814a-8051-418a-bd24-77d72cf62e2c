@@ -1,4 +1,4 @@
-/* 鼠标交互：工具放置、拖拽移动、视图平移缩放、键盘删除。 */
+/* 鼠标交互：工具放置、整轴/带轮拖拽、视图平移缩放、键盘删除。 */
 'use strict';
 const Drag = {
   mode: null,        // 'move' | 'pan' | 'place'
@@ -29,7 +29,6 @@ const Interact = (() => {
     if (tool !== 'select') {
       const w = Render.s2w(sx, sy);
       if (tool === 'obstacle') {
-        // 按下拖拽定义矩形宽高（最小 40mm），单击放置默认 200×120
         Drag.mode = 'place'; Drag.placeKind = 'obstacle';
         Drag.start = [w[0], w[1]];
         Drag.ghost = { tool, x: w[0], y: w[1], w: 0, h: 0, ax: w[0], ay: w[1] };
@@ -45,10 +44,25 @@ const Interact = (() => {
     if (hit && hit.type === 'pulley') {
       const p = findPulley(hit.id);
       selectObj('pulley', hit.id);
-      if (p.locked) { Drag.mode = null; App.refreshAll(); return; }
-      Drag.mode = 'move'; Drag.id = hit.id; Drag.type = 'pulley';
-      Drag.start = [p.x, p.y];
-      Drag.grabOffset = [p.x - Render.s2w(sx, sy)[0], p.y - Render.s2w(sx, sy)[1]];
+      const s = findShaft(p.shaftId);
+      // 已锁定轴位上只有张紧轮仍允许拖动试排
+      const tensionerOnly = shaftPulleys(p.shaftId)
+        .every(q => q.kind === 'tensioner');
+      if (s && s.locked && !tensionerOnly) { Drag.mode = null; App.refreshAll(); return; }
+      // 拖动的是整根共享轴（轴上全部带轮一起动）
+      Drag.mode = 'move'; Drag.id = p.shaftId; Drag.type = 'shaft';
+      const w = Render.s2w(sx, sy);
+      Drag.start = [s.x, s.y];
+      Drag.grabOffset = [s.x - w[0], s.y - w[1]];
+    } else if (hit && hit.type === 'shaft') {
+      const s = findShaft(hit.id);
+      selectObj('shaft', hit.id);
+      const tensionerOnly = shaftPulleys(s.id).every(q => q.kind === 'tensioner');
+      if (s.locked && !tensionerOnly) { Drag.mode = null; App.refreshAll(); return; }
+      Drag.mode = 'move'; Drag.id = hit.id; Drag.type = 'shaft';
+      const w = Render.s2w(sx, sy);
+      Drag.start = [s.x, s.y];
+      Drag.grabOffset = [s.x - w[0], s.y - w[1]];
     } else if (hit && hit.type === 'obstacle') {
       selectObj('obstacle', hit.id);
       Drag.mode = 'move'; Drag.id = hit.id; Drag.type = 'obstacle';
@@ -56,14 +70,16 @@ const Interact = (() => {
       const o = findObstacle(hit.id);
       Drag.grabOffset = [o.x - w[0], o.y - w[1]];
     } else if (hit && hit.type === 'edge') {
-      State.selection = { type: 'edge', index: hit.index };
-      // 点击带段：优先显示与之相关的告警依据
-      const w = App.warnsForEdge(hit.index)[0];
+      State.selection = { type: 'edge', id: hit.loopId + ':' + hit.index };
+      const w = App.warnsForEdge(hit.loopId, hit.index)[0];
       if (w) App.activateWarn(w, true);
-      else { clearHighlight(); State.highlight.edges = [hit.index]; }
+      else {
+        clearHighlight();
+        State.highlight.lrefs = [[hit.loopId, hit.index]];
+        State.highlight.loops = [hit.loopId];
+      }
     } else {
       selectObj(null, null);
-      State.selection = { type: null, id: null };
       clearHighlight();
     }
     App.refreshAll();
@@ -87,7 +103,8 @@ const Interact = (() => {
         Drag.ghost.w = Math.max(40, Math.abs(w[0] - ax));
         Drag.ghost.h = Math.max(40, Math.abs(w[1] - ay));
       } else {
-        Drag.ghost.x = Drag.ghost.ax; Drag.ghost.y = Drag.ghost.ay;
+        Drag.ghost.x = Drag.ghost.ax;
+        Drag.ghost.y = Drag.ghost.ay;
         Drag.ghost.d = Math.max(60, 2 * Math.hypot(w[0] - Drag.ghost.ax,
           w[1] - Drag.ghost.ay));
       }
@@ -96,17 +113,15 @@ const Interact = (() => {
     }
     if (Drag.mode === 'move') {
       moved = true;
-      if (Drag.type === 'pulley') {
-        const p = findPulley(Drag.id);
-        p.x = w[0] + Drag.grabOffset[0];
-        p.y = w[1] + Drag.grabOffset[1];
+      if (Drag.type === 'shaft') {
+        Loops.moveShaft(Drag.id, w[0] + Drag.grabOffset[0],
+          w[1] + Drag.grabOffset[1]);
       } else {
         const o = findObstacle(Drag.id);
         o.x = w[0] + Drag.grabOffset[0];
         o.y = w[1] + Drag.grabOffset[1];
       }
-      State.quick = GEO.quickPath(State);
-      // 拖拽中用后端节流重算 + 本地即时预览
+      State.quick = GEO.quickLoops(State);
       App.invalidate(true);
       Render.render();
       Props.renderProps();
@@ -137,19 +152,29 @@ const Interact = (() => {
       selectObj('obstacle', o.id);
     } else {
       const kind = g.tool;
-      // 新主动轮自动把旧的降级
-      if (kind === 'driver')
-        State.pulleys.forEach(p => { if (p.kind === 'driver') p.kind = 'driven'; });
+      // 同回路内只允许一个主动轮
+      if (kind === 'driver') {
+        const lp = activeLoop();
+        State.pulleys.forEach(p => {
+          if (p.kind === 'driver' && pulleyLoop(p.id)?.id === lp?.id) p.kind = 'driven';
+        });
+      }
       const seq = State.pulleys.filter(p => p.kind === kind).length + 1;
+      const x = Math.round(g.x), y = Math.round(g.y);
+      const shaft = { id: uid('s'), name: '轴 ' + (State.shafts.length + 1),
+        x, y, locked: false, allowTorque: 0, allowRadial: 0 };
+      State.shafts.push(shaft);
       const p = {
         id: uid('p'),
         name: { driver: '主动轮', driven: '从动轮', idler: '惰轮', tensioner: '张紧轮' }[kind] + seq,
-        kind, x: Math.round(g.x), y: Math.round(g.y), diameter: g.d,
+        kind, shaftId: shaft.id, x, y, diameter: g.d,
         locked: false, dir: 1, targetRpm: null, targetDir: null
       };
-      if (kind === 'driven') { p.targetRpm = null; p.targetDir = 1; }
+      if (kind === 'driven') p.targetDir = 1;
       State.pulleys.push(p);
-      State.route.order.push(p.id);
+      // 新轮加入当前回路
+      const lp = activeLoop();
+      if (lp) lp.order.push(p.id);
       selectObj('pulley', p.id);
     }
     setTool('select');
@@ -172,7 +197,8 @@ const Interact = (() => {
   function key(e) {
     if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
     if (e.key === 'Delete' || e.key === 'Backspace') {
-      if (State.selection.type === 'pulley' || State.selection.type === 'obstacle')
+      if (State.selection.type === 'pulley' || State.selection.type === 'obstacle'
+        || State.selection.type === 'shaft')
         App.deleteSelection();
     }
     if (e.key === 'f' || e.key === 'F') { Render.fit(); Render.render(); }
