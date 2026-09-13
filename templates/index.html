@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>皮带传动布置校核</title>
+<link rel="stylesheet" href="/static/css/app.css">
+</head>
+<body>
+<div id="app">
+  <header id="topbar">
+    <div class="brand">皮带传动布置校核</div>
+    <div class="tools">
+      <button data-tool="select" class="tool-btn active" title="选择 / 拖拽">⬚ 选择</button>
+      <button data-tool="driver" class="tool-btn" title="放置主动轮">◉ 主动轮</button>
+      <button data-tool="driven" class="tool-btn" title="放置从动轮">◎ 从动轮</button>
+      <button data-tool="idler" class="tool-btn" title="放置张紧轮（惰轮）">◌ 张紧轮</button>
+      <button data-tool="obstacle" class="tool-btn" title="放置矩形护罩/障碍">▭ 护罩</button>
+      <span class="sep"></span>
+      <button id="btn-open-cross" class="tool-btn" title="两轮时切换开口/交叉带">⊕ 模式：<b id="mode-label">开口带</b></button>
+      <span class="sep"></span>
+      <button id="btn-lock-all" title="锁定全部轮位（只留张紧轮可动）">🔒 锁定轮位</button>
+      <button id="btn-fit" title="缩放适配全部图元">⛶ 适配</button>
+    </div>
+    <div class="tools">
+      <button id="btn-save">💾 存方案</button>
+      <button id="btn-compare">⇆ 叠加比较…</button>
+      <button id="btn-svg">⬇ SVG</button>
+      <button id="btn-export">⬇ JSON</button>
+      <button id="btn-import">⬆ 导入 JSON</button>
+      <input type="file" id="file-import" accept=".json,application/json" hidden>
+    </div>
+  </header>
+
+  <aside id="sidebar">
+    <details open id="panel-global">
+      <summary>全局参数</summary>
+      <div class="panel-body" id="global-form"></div>
+    </details>
+    <details open id="panel-props">
+      <summary>属性</summary>
+      <div class="panel-body" id="props-form"><p class="hint">选中画布上的轮或护罩后在此编辑。</p></div>
+    </details>
+    <details open id="panel-route">
+      <summary>绕行顺序</summary>
+      <div class="panel-body">
+        <ol id="route-list" class="route-list"></ol>
+        <label class="row-line" title="标记某段为交叉（内公切线）">带段交叉标记：</label>
+        <div id="edge-cross-list" class="edge-cross-list"></div>
+        <p class="hint">按皮带绕入顺序列出全部轮；两轮时也可用顶部“开口/交叉”模式按钮一键切换。</p>
+      </div>
+    </details>
+  </aside>
+
+  <main id="stage">
+    <canvas id="canvas"></canvas>
+    <div id="hint-bar">在画布空白处按下并拖动放置（轮从按下点展开）· 滚轮缩放 · 右键/中键平移 · Delete 删除选中</div>
+    <div id="calc-chip" class="chip hidden"></div>
+  </main>
+
+  <aside id="rightbar">
+    <details open>
+      <summary>校核告警 <span id="warn-count" class="badge"></span></summary>
+      <div id="warn-list" class="warn-list"></div>
+    </details>
+    <details open>
+      <summary>方案库（SQLite）</summary>
+      <div class="panel-body">
+        <input id="scheme-name" placeholder="方案名称" maxlength="80">
+        <div class="btn-row">
+          <button id="btn-new" class="mini">新建空白</button>
+          <button id="btn-reset-demo" class="mini">恢复示例</button>
+        </div>
+        <ul id="scheme-list" class="scheme-list"></ul>
+        <p class="hint">“载入”会替换当前画布；勾选两条方案后可用顶部“叠加比较”。</p>
+      </div>
+    </details>
+  </aside>
+
+  <section id="bottombar">
+    <div class="tabs">
+      <button class="tab active" data-tab="basis">计算依据</button>
+      <button class="tab" data-tab="summary">结果汇总</button>
+    </div>
+    <div id="tab-basis" class="tab-pane">
+      <div id="basis-content" class="basis-content"></div>
+    </div>
+    <div id="tab-summary" class="tab-pane hidden">
+      <div id="summary-content" class="basis-content"></div>
+    </div>
+  </section>
+</div>
+<div id="compare-overlay" class="overlay hidden">
+  <div class="overlay-box wide">
+    <div class="overlay-head"><b>方案叠加比较</b><button id="compare-close" class="mini">✕</button></div>
+    <div id="compare-body"></div>
+  </div>
+</div>
+<script src="/static/js/geometry.js"></script>
+<script src="/static/js/state.js"></script>
+<script src="/static/js/api.js"></script>
+<script src="/static/js/props.js"></script>
+<script src="/static/js/render.js"></script>
+<script src="/static/js/interact.js"></script>
+<script src="/static/js/svg.js"></script>
+<script src="/static/js/app.js"></script>
+</body>
+</html>
